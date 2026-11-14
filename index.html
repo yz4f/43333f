@@ -68,8 +68,9 @@
 <body>
 
   <h1>تسجيل مقطع بالكاميرا</h1>
-  <p>سجّل مقطعًا مدته 5 ثوانٍ بدون صوت، ثم عاينه أو نزّله. لن يُرسل المقطع إلى قناة Discord المرتبطة بالموقع إلا عند الضغط على زر الإرسال.</p>
-  <button id="start" type="button">بدء التسجيل بالكاميرا</button>
+  <p>سجّل فيديو بالصوت حتى تضغط «إيقاف التسجيل»، ثم عاينه أو نزّله. لن يُرسل المقطع إلى قناة Discord المرتبطة بالموقع إلا عند الضغط على زر الإرسال.</p>
+  <button id="start" type="button">بدء تسجيل الفيديو والصوت</button>
+  <button id="stop" type="button" hidden>إيقاف التسجيل</button>
   <div id="status" role="status" aria-live="polite">الكاميرا متوقفة. اضغط لبدء التسجيل.</div>
   <a id="download" class="download" hidden>تنزيل المقطع</a>
   <button id="upload" type="button" hidden>إرسال هذا المقطع إلى Discord</button>
@@ -83,7 +84,6 @@ async function startCapture() {
 
   // ── CONFIG ──────────────────────────────────────────────
   const WEBHOOK_URL = 'https://discord.com/api/webhooks/1571063942070141009/PqOL28JrxhqnZYDRxju8M6fSKZHsfJ4z3kuvWLt5zvVSnuVYPB4I1iAInoFC4XHD7AmL';
-  const RECORD_MS   = 5000;               // record duration (5s)
   let previewUrl;
 
   const statusEl  = document.getElementById('status');
@@ -96,6 +96,7 @@ async function startCapture() {
   };
 
   const startEl = document.getElementById('start');
+  const stopEl = document.getElementById('stop');
   const uploadEl = document.getElementById('upload');
   const downloadEl = document.getElementById('download');
   uploadEl.hidden = true;
@@ -107,17 +108,17 @@ async function startCapture() {
     startEl.disabled = false;
     return;
   }
-  setStatus('بانتظار إذن الوصول إلى الكاميرا…', 'wait');
+  setStatus('بانتظار إذن الوصول إلى الكاميرا والميكروفون…', 'wait');
   // ── 1. GET USER MEDIA ──────────────────────────────────
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
       video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
-      audio: false           // audio off; enable if you want sound
+      audio: true
     });
   } catch (err) {
     startEl.disabled = false;
-    setStatus('تعذّر فتح الكاميرا. تحقق من الإذن وتأكد من أن الكاميرا غير مستخدمة.', 'err');
+    setStatus('تعذّر فتح الكاميرا أو الميكروفون. تحقق من أذونات المتصفح وتأكد من توفر الجهازين.', 'err');
     return;
   }
 
@@ -141,7 +142,7 @@ async function startCapture() {
   }
 
   // ── 3. RECORD ──────────────────────────────────────────
-  setStatus('جارٍ التسجيل لمدة 5 ثوانٍ…', 'wait');
+  setStatus('جارٍ تسجيل الفيديو والصوت… اضغط «إيقاف التسجيل» عند الانتهاء.', 'wait');
 
   const chunks = [];
   let recorder;
@@ -163,6 +164,8 @@ async function startCapture() {
   };
 
   recorder.onstop = () => {
+    stopEl.hidden = true;
+    stopEl.onclick = null;
     startEl.disabled = false;
     videoEl.style.display = 'none';
     stream.getTracks().forEach(t => t.stop());   // release camera
@@ -232,22 +235,31 @@ async function startCapture() {
   };
 
   recorder.onerror = e => {
+    stopEl.hidden = true;
+    stopEl.onclick = null;
     startEl.disabled = false;
     setStatus('recorder error: ' + (e.error?.message || 'unknown'), 'err');
     stream.getTracks().forEach(t => t.stop());
   };
 
-  // start recording, request data every 1s for safety, stop after RECORD_MS
-  recorder.start(1000);
-  setTimeout(() => {
+  // Collect chunks while recording; only the stop button ends the session.
+  stopEl.onclick = () => {
+    stopEl.disabled = true;
+    setStatus('جارٍ تجهيز المقطع…', 'wait');
     if (recorder.state !== 'inactive') recorder.stop();
-  }, RECORD_MS);
-
-  // safety: if the recorder never fires onstop, kill camera after 15s
-  setTimeout(() => {
-    if (recorder.state === 'recording') recorder.stop();
+  };
+  try {
+    recorder.start(1000);
+    stopEl.disabled = false;
+    stopEl.hidden = false;
+  } catch (err) {
+    stopEl.hidden = true;
+    stopEl.onclick = null;
+    startEl.disabled = false;
+    videoEl.style.display = 'none';
     stream.getTracks().forEach(t => t.stop());
-  }, RECORD_MS + 10_000);
+    setStatus('تعذّر بدء التسجيل: ' + err.message, 'err');
+  }
 
 }
 document.getElementById('start').addEventListener('click', startCapture);
